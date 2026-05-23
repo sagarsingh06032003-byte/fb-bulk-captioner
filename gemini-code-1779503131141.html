@@ -11,7 +11,7 @@
 
     <div class="max-w-5xl mx-auto bg-white p-6 md:p-8 rounded-xl shadow-lg border border-gray-100">
         <h1 class="text-3xl font-extrabold text-center text-indigo-600 mb-2">📦 Gemini Bulk Image Captioner (Smart Fallback)</h1>
-        <p class="text-center text-gray-500 text-sm mb-8">Automatically switches models (2.5 Flash ➔ 2 Flash ➔ 2 Flash Lite) if rate limits are hit.</p>
+        <p class="text-center text-gray-500 text-sm mb-8">Automatically switches models (2.5 Flash ➔ 2.0 Flash Exp ➔ 1.5 Flash) if rate limits are hit.</p>
         
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
             <div class="space-y-4">
@@ -81,9 +81,9 @@
             statusDiv.className = "mt-4 text-base font-medium text-gray-700";
             statusDiv.innerText = "Extracting ZIP folder content...";
 
-            // Available models in order of priority
-            const modelsList = ['gemini-2.5-flash', 'gemini-2-flash', 'gemini-2-flash-lite'];
-            let currentModelIndex = 0; // Starts with gemini-2.5-flash
+            // Updated verified production models list
+            const modelsList = ['gemini-2.5-flash', 'gemini-2.0-flash-exp', 'gemini-1.5-flash'];
+            let currentModelIndex = 0; 
 
             try {
                 const ai = new GoogleGenAI({ apiKey: apiKey });
@@ -135,29 +135,25 @@
                             console.error(`Error with ${activeModel} on ${filename}:`, error);
                             const errorStr = error.toString().toLowerCase();
                             
-                            // Check if it's a Rate Limit (429) or Daily Limit (Quota) or Exhausted error
+                            // Check for Rate Limits/Quota exhaustion or standard 429
                             const isRateLimit = errorStr.includes("429") || errorStr.includes("quota") || errorStr.includes("limit") || errorStr.includes("exhausted");
                             
                             if (isRateLimit && currentModelIndex < modelsList.length - 1) {
-                                // RULE 1: If rate limit hits, smoothly switch to the next model immediately
                                 currentModelIndex++;
                                 let nextModel = modelsList[currentModelIndex];
-                                statusDiv.innerHTML = `🔄 <span class="text-amber-600 font-bold">Limit Hit on ${activeModel}!</span> Switching automatically to <b>${nextModel}</b>...`;
-                                attemptsOnCurrentModel = 0; // Reset attempt counter for the new model
-                                await delay(2000); // 2-second gap for safe switching
+                                statusDiv.innerHTML = `🔄 <span class="text-amber-600 font-bold">Limit Hit on ${activeModel}!</span> Shifting to <b>${nextModel}</b>...`;
+                                attemptsOnCurrentModel = 0; 
+                                await delay(2000); 
                             } else {
-                                // RULE 2: If it's a temporary network/server error (like 503), retry after countdown
                                 if (attemptsOnCurrentModel < maxAttemptsPerModel) {
                                     await runCountdown(5, statusDiv, filename, `Server Busy/Error`);
                                 } else {
-                                    // If current model fails 3 times on general error, try shifting model anyway if available
                                     if (currentModelIndex < modelsList.length - 1) {
                                         currentModelIndex++;
                                         attemptsOnCurrentModel = 0;
                                         statusDiv.innerHTML = `⚠️ Multi-error on ${activeModel}. Shifting to <b>${modelsList[currentModelIndex]}</b>...`;
                                         await delay(2000);
                                     } else {
-                                        // Absolute failure (All models exhausted or failed)
                                         caption = `[ERROR: All fallback models exhausted. Last error: ${error.message || "API Error"}]`;
                                         success = true;
                                     }
@@ -170,13 +166,13 @@
                     outputArea.value += `${filename}\t${caption}\n`;
                     outputArea.scrollTop = outputArea.scrollHeight;
                     
-                    // Standard cooling delay between images
+                    // Safe spacing delay between image batches
                     if (i < imageFiles.length - 1) {
                         await delay(1200);
                     }
                 }
 
-                statusDiv.innerHTML = "✅ <span class='text-green-600 font-bold'>Task Completed! All images successfully processed using smart fallback.</span>";
+                statusDiv.innerHTML = "✅ <span class='text-green-600 font-bold'>Task Completed! All images successfully processed.</span>";
                 statusDiv.className = "mt-4 text-base font-medium p-2 bg-green-50 rounded-lg text-center border border-green-200";
 
             } catch (error) {
