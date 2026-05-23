@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gemini Bulk Image Captioner</title>
+    <!-- Tailwind CSS for clean UI -->
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <!-- JSZip to extract zip files in browser -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+</head>
+<body class="bg-gray-50 text-gray-800 font-sans min-h-screen p-6">
+
+    <div class="max-w-4xl mx-auto bg-white p-8 rounded-xl shadow-md">
+        <h1 class="text-3xl font-bold text-center text-indigo-600 mb-8">📦 Gemini Bulk Image Captioner</h1>
+        
+        <!-- Setup Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+            <!-- Left: API Key & ZIP -->
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-sm font-semibold text-gray-700 mb-1">Gemini API Key</label>
+                    <input type="password" id="apiKey" placeholder="AIzaSy..." class="w-full p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none">
+                </div>
+                <div>
+                    <label class="block text-sm font-semibold text-gray-700 mb-1">Upload ZIP File (Images Only)</label>
+                    <input type="file" id="zipFile" accept=".zip" class="w-full p-2 border border-gray-300 rounded-lg file:mr-4 file:py-1.5 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-indigo-5 miles:text-indigo-700 hover:file:bg-indigo-100 cursor-pointer">
+                </div>
+            </div>
+
+            <!-- Right: Master Prompt -->
+            <div>
+                <label class="block text-sm font-semibold text-gray-700 mb-1">Master Prompt</label>
+                <textarea id="masterPrompt" rows="4" class="w-full p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="e.g., Generate a short ecommerce caption for this image. Focus on materials and vibes."></textarea>
+            </div>
+        </div>
+
+        <!-- Action Button & Progress -->
+        <div class="text-center mb-8">
+            <button id="startBtn" onclick="processZip()" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-8 rounded-lg shadow transition duration-200 disabled:bg-gray-400">
+                Start Bulk Captioning
+            </button>
+            <div id="status" class="mt-3 text-sm font-medium text-gray-600"></div>
+        </div>
+
+        <!-- Output Section -->
+        <div class="border-t border-gray-200 pt-6">
+            <div class="flex justify-between items-center mb-3">
+                <h2 class="text-xl font-bold text-gray-700">📋 Output (Ready for Google Sheets)</h2>
+                <button onclick="copyToClipboard()" class="text-sm bg-gray-200 hover:bg-gray-300 text-gray-700 py-1 px-3 rounded-md transition font-medium">
+                    Copy All
+                </button>
+            </div>
+            <!-- Textarea strictly designed for easy copy-paste to Sheets -->
+            <textarea id="outputArea" rows="12" readonly class="w-full p-4 bg-gray-900 text-green-400 font-mono text-sm rounded-lg border border-gray-800" placeholder="Results will appear here in Tab-Separated format..."></textarea>
+        </div>
+    </div>
+
+    <!-- Script logic using modern Google Gen AI SDK via ES Modules -->
+    <script type="module">
+        import { GoogleGenAI } from 'https://esm.run/@google/genai';
+
+        window.processZip = async function() {
+            const apiKey = document.getElementById('apiKey').value.trim();
+            const zipFileInput = document.getElementById('zipFile').files[0];
+            const masterPrompt = document.getElementById('masterPrompt').value.trim();
+            const statusDiv = document.getElementById('status');
+            const outputArea = document.getElementById('outputArea');
+            const startBtn = document.getElementById('startBtn');
+
+            // Validations
+            if (!apiKey) return alert('Please enter your Gemini API Key!');
+            if (!zipFileInput) return alert('Please upload a ZIP file!');
+            if (!masterPrompt) return alert('Please enter a Master Prompt!');
+
+            // UI Reset
+            startBtn.disabled = true;
+            outputArea.value = "";
+            statusDiv.innerText = "Extracting ZIP file...";
+
+            try {
+                // Initialize Gemini SDK with User Key
+                const ai = new GoogleGenAI({ apiKey: apiKey });
+                
+                // Load and parse ZIP
+                const zip = await JSZip.loadAsync(zipFileInput);
+                
+                // Filter only image files and sort them sequence-wise (1.jpg, 2.jpg...)
+                const imageFiles = Object.keys(zip.files).filter(filename => {
+                    return !zip.files[filename].dir && /\.(jfif|pjpeg|jpeg|pjpg|png|jpg|webp)$/i.test(filename);
+                }).sort((a, b) => a.localeCompare(b, undefined, {numeric: true, sensitivity: 'base'}));
+
+                if (imageFiles.length === 0) {
+                    throw new Error("No supported images found inside the ZIP folder.");
+                }
+
+                // Process image by image sequentially
+                for (let i = 0; i < imageFiles.length; i++) {
+                    const filename = imageFiles[i];
+                    statusDiv.innerHTML = `Processing image <span class="text-indigo-600 font-bold">${i + 1}/${imageFiles.length}</span>: ${filename}...`;
+
+                    // Extract image file as base64
+                    const fileData = await zip.files[filename].async("base64");
+                    
+                    // Determine correct mime type
+                    const ext = filename.split('.').pop().toLowerCase();
+                    const mimeType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+
+                    // Formulate the parts for Gemini API call
+                    const imagePart = {
+                        inlineData: {
+                            data: fileData,
+                            mimeType: mimeType
+                        },
+                    };
+
+                    // Call Gemini 2.5 Flash (Fast & Cost-effective for vision tasks)
+                    const response = await ai.models.generateContent({
+                        model: 'gemini-2.5-flash',
+                        contents: [masterPrompt, imagePart],
+                    });
+
+                    // Clean the text response (remove newlines from inside the caption so sheets don't break)
+                    let caption = response.text.trim().replace(/\r?\n|\r/g, " ");
+
+                    // Tab-separated formatting format (\t allows perfect pasting to next column in Sheets)
+                    outputArea.value += `${filename}\t${caption}\n`;
+                    
+                    // Auto scroll to bottom as it appends
+                    outputArea.scrollTop = outputArea.scrollHeight;
+                }
+
+                statusDiv.innerHTML = "✅ <span class='text-green-600 font-bold'>All images processed successfully!</span>";
+
+            } catch (error) {
+                console.error(error);
+                statusDiv.innerHTML = `❌ <span class='text-red-600 font-bold'>Error: ${error.message}</span>`;
+            } finally {
+                startBtn.disabled = false;
+            }
+        }
+
+        // Helper function to quickly copy the TSV string
+        window.copyToClipboard = function() {
+            const outputArea = document.getElementById('outputArea');
+            if(!outputArea.value) return alert("Nothing to copy yet!");
+            outputArea.select();
+            document.execCommand('copy');
+            alert('Copied to clipboard! You can now paste directly into Google Sheets.');
+        }
+    </script>
+</body>
+</html>
