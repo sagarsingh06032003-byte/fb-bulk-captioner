@@ -3,15 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gemini Bulk Image Captioner Pro</title>
+    <title>Gemini Bulk Image Captioner Smart Pro</title>
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
 <body class="bg-gray-50 text-gray-800 font-sans min-h-screen p-4 md:p-8">
 
     <div class="max-w-5xl mx-auto bg-white p-6 md:p-8 rounded-xl shadow-lg border border-gray-100">
-        <h1 class="text-3xl font-extrabold text-center text-indigo-600 mb-2">📦 Gemini Bulk Image Captioner Pro</h1>
-        <p class="text-center text-gray-500 text-sm mb-8">Automatically extract ZIP, process images sequentially, and retry on API errors.</p>
+        <h1 class="text-3xl font-extrabold text-center text-indigo-600 mb-2">📦 Gemini Bulk Image Captioner (Smart Fallback)</h1>
+        <p class="text-center text-gray-500 text-sm mb-8">Automatically switches models (2.5 Flash ➔ 2 Flash ➔ 2 Flash Lite) if rate limits are hit.</p>
         
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
             <div class="space-y-4">
@@ -27,7 +27,7 @@
 
             <div>
                 <label class="block text-sm font-semibold text-gray-700 mb-1">Master Prompt</label>
-                <textarea id="masterPrompt" rows="4" class="w-full p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition" placeholder="e.g., Generate a short ecommerce caption for this image. Focus on materials and vibes."></textarea>
+                <textarea id="masterPrompt" rows="4" class="w-full p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition" placeholder="e.g., Generate a short ecommerce caption for this image."></textarea>
             </div>
         </div>
 
@@ -55,13 +55,11 @@
     <script type="module">
         import { GoogleGenAI } from 'https://esm.run/@google/genai';
 
-        // Helper function for strict delay
         const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-        // Function to handle countdown timer in UI status
-        async function runCountdown(seconds, messageElement, filename, attemptStr) {
+        async function runCountdown(seconds, messageElement, filename, reason) {
             for (let i = seconds; i > 0; i--) {
-                messageElement.innerHTML = `⚠️ <span class="text-amber-600 font-semibold">API Busy/Unavailable.</span> Retrying <span class="font-bold">${filename}</span> in <span class="text-indigo-600 font-bold">${i}s</span>... (${attemptStr})`;
+                messageElement.innerHTML = `⚠️ <span class="text-amber-600 font-semibold">${reason}.</span> Retrying <span class="font-bold">${filename}</span> in <span class="text-indigo-600 font-bold">${i}s</span>...`;
                 await delay(1000);
             }
         }
@@ -74,25 +72,23 @@
             const outputArea = document.getElementById('outputArea');
             const startBtn = document.getElementById('startBtn');
 
-            // Form Validations
             if (!apiKey) return alert('Please enter your Gemini API Key!');
             if (!zipFileInput) return alert('Please upload a ZIP file!');
             if (!masterPrompt) return alert('Please enter a Master Prompt!');
 
-            // UI Reset State
             startBtn.disabled = true;
             outputArea.value = "";
             statusDiv.className = "mt-4 text-base font-medium text-gray-700";
             statusDiv.innerText = "Extracting ZIP folder content...";
 
+            // Available models in order of priority
+            const modelsList = ['gemini-2.5-flash', 'gemini-2-flash', 'gemini-2-flash-lite'];
+            let currentModelIndex = 0; // Starts with gemini-2.5-flash
+
             try {
-                // Initialize modern Gemini Client
                 const ai = new GoogleGenAI({ apiKey: apiKey });
-                
-                // Read Zip File
                 const zip = await JSZip.loadAsync(zipFileInput);
                 
-                // Filter only image formats and apply natural sorting (1.jpg, 2.jpg, ... 13.jpg)
                 const imageFiles = Object.keys(zip.files).filter(filename => {
                     return !zip.files[filename].dir && /\.(jfif|pjpeg|jpeg|pjpg|png|jpg|webp)$/i.test(filename);
                 }).sort((a, b) => a.localeCompare(b, undefined, {numeric: true, sensitivity: 'base'}));
@@ -101,79 +97,86 @@
                     throw new Error("No supported images (.jpg, .png, .webp) found inside the uploaded ZIP.");
                 }
 
-                // Loop through images sequentially
+                // Main Sequential Loop
                 for (let i = 0; i < imageFiles.length; i++) {
                     const filename = imageFiles[i];
-                    
-                    // Extract image as Base64 from ZIP
-                    let fileData;
-                    try {
-                        fileData = await zip.files[filename].async("base64");
-                    } catch (err) {
-                        console.error(`Skipping file due to extraction failure: ${filename}`, err);
-                        outputArea.value += `${filename}\t[ERROR: Failed to read file from ZIP]\n`;
-                        continue;
-                    }
-
-                    // Map extensions to strict mime types
+                    let fileData = await zip.files[filename].async("base64");
                     const ext = filename.split('.').pop().toLowerCase();
                     const mimeType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
 
-                    const imagePart = {
-                        inlineData: { data: fileData, mimeType: mimeType },
-                    };
+                    const imagePart = { inlineData: { data: fileData, mimeType: mimeType } };
 
                     let success = false;
-                    let attempts = 0;
-                    const maxAttempts = 5; // Will try 5 times before moving to next image if fatal
+                    let attemptsOnCurrentModel = 0;
+                    const maxAttemptsPerModel = 3; 
                     let caption = "";
 
-                    // Retry Mechanism Loop
-                    while (!success && attempts < maxAttempts) {
-                        try {
-                            attempts++;
-                            statusDiv.innerHTML = `⚙️ Processing image <span class="text-indigo-600 font-bold">${i + 1}/${imageFiles.length}</span>: <span class="font-semibold text-gray-900">${filename}</span> (Attempt ${attempts}/${maxAttempts})`;
+                    // Request loop for current image
+                    while (!success) {
+                        let activeModel = modelsList[currentModelIndex];
+                        statusDiv.innerHTML = `⚙️ Processing <span class="text-indigo-600 font-bold">${i + 1}/${imageFiles.length}</span>: <span class="font-semibold text-gray-900">${filename}</span> using <span class="text-purple-600 font-bold">${activeModel}</span>`;
 
-                            // API Call to Gemini 2.5 Flash
+                        try {
+                            attemptsOnCurrentModel++;
+                            
                             const response = await ai.models.generateContent({
-                                model: 'gemini-2.5-flash',
+                                model: activeModel,
                                 contents: [masterPrompt, imagePart],
                             });
 
                             if (response && response.text) {
-                                // Clean line breaks inside caption to protect Google Sheets cell rows
                                 caption = response.text.trim().replace(/\r?\n|\r/g, " ");
-                                success = true;
+                                success = true; 
                             } else {
-                                throw new Error("Empty response received from Gemini.");
+                                throw new Error("Empty response");
                             }
 
                         } catch (error) {
-                            console.error(`API Error on ${filename} (Attempt ${attempts}):`, error);
+                            console.error(`Error with ${activeModel} on ${filename}:`, error);
+                            const errorStr = error.toString().toLowerCase();
                             
-                            if (attempts < maxAttempts) {
-                                // Run a visual 5-second countdown on UI before retrying
-                                await runCountdown(5, statusDiv, filename, `Attempt ${attempts}/${maxAttempts}`);
+                            // Check if it's a Rate Limit (429) or Daily Limit (Quota) or Exhausted error
+                            const isRateLimit = errorStr.includes("429") || errorStr.includes("quota") || errorStr.includes("limit") || errorStr.includes("exhausted");
+                            
+                            if (isRateLimit && currentModelIndex < modelsList.length - 1) {
+                                // RULE 1: If rate limit hits, smoothly switch to the next model immediately
+                                currentModelIndex++;
+                                let nextModel = modelsList[currentModelIndex];
+                                statusDiv.innerHTML = `🔄 <span class="text-amber-600 font-bold">Limit Hit on ${activeModel}!</span> Switching automatically to <b>${nextModel}</b>...`;
+                                attemptsOnCurrentModel = 0; // Reset attempt counter for the new model
+                                await delay(2000); // 2-second gap for safe switching
                             } else {
-                                // Max retries exhausted, save error to log instead of crashing the loop
-                                caption = `[API ERROR: ${error.message || "Failed after maximum retries"}]`;
-                                success = true; // Breaking the while loop safely
+                                // RULE 2: If it's a temporary network/server error (like 503), retry after countdown
+                                if (attemptsOnCurrentModel < maxAttemptsPerModel) {
+                                    await runCountdown(5, statusDiv, filename, `Server Busy/Error`);
+                                } else {
+                                    // If current model fails 3 times on general error, try shifting model anyway if available
+                                    if (currentModelIndex < modelsList.length - 1) {
+                                        currentModelIndex++;
+                                        attemptsOnCurrentModel = 0;
+                                        statusDiv.innerHTML = `⚠️ Multi-error on ${activeModel}. Shifting to <b>${modelsList[currentModelIndex]}</b>...`;
+                                        await delay(2000);
+                                    } else {
+                                        // Absolute failure (All models exhausted or failed)
+                                        caption = `[ERROR: All fallback models exhausted. Last error: ${error.message || "API Error"}]`;
+                                        success = true;
+                                    }
+                                }
                             }
                         }
                     }
 
-                    // Append current result safely (Tab space keeps file and caption split for sheets)
+                    // Save Result
                     outputArea.value += `${filename}\t${caption}\n`;
-                    outputArea.scrollTop = outputArea.scrollHeight; // Auto-scroll terminal
+                    outputArea.scrollTop = outputArea.scrollHeight;
                     
-                    // Cool down delay (1.5s) to stay within Google's safe request boundaries
+                    // Standard cooling delay between images
                     if (i < imageFiles.length - 1) {
-                        statusDiv.innerHTML = `⏳ Cooling down for 1.5s before next image...`;
-                        await delay(1500);
+                        await delay(1200);
                     }
                 }
 
-                statusDiv.innerHTML = "✅ <span class='text-green-600 font-bold'>Task Completed! All images successfully processed.</span>";
+                statusDiv.innerHTML = "✅ <span class='text-green-600 font-bold'>Task Completed! All images successfully processed using smart fallback.</span>";
                 statusDiv.className = "mt-4 text-base font-medium p-2 bg-green-50 rounded-lg text-center border border-green-200";
 
             } catch (error) {
@@ -185,13 +188,12 @@
             }
         }
 
-        // Clip copy feature
         window.copyToClipboard = function() {
             const outputArea = document.getElementById('outputArea');
             if(!outputArea.value) return alert("Output area is empty!");
             outputArea.select();
             document.execCommand('copy');
-            alert('Copied successfully! Now just click on cell A1 in Google Sheets and press Ctrl+V.');
+            alert('Copied successfully! Paste directly into Google Sheets.');
         }
     </script>
 </body>
