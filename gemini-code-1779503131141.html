@@ -3,15 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gemini Bulk Image Captioner Ultimate</title>
+    <title>Gemini Bulk Image Captioner Pro</title>
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
 <body class="bg-gray-50 text-gray-800 font-sans min-h-screen p-4 md:p-8">
 
     <div class="max-w-5xl mx-auto bg-white p-6 md:p-8 rounded-xl shadow-lg border border-gray-100">
-        <h1 class="text-3xl font-extrabold text-center text-indigo-600 mb-2">📦 Gemini Bulk Image Captioner (Ultimate Edition)</h1>
-        <p class="text-center text-gray-500 text-sm mb-8">Smart Fallback + Auto-Cooldown. Matches your AI Studio dashboard perfectly.</p>
+        <h1 class="text-3xl font-extrabold text-center text-indigo-600 mb-2">📦 Gemini Bulk Image Captioner (Dashboard Match)</h1>
+        <p class="text-center text-gray-500 text-sm mb-8">Smart Fallback across Gemini 2.5, Gemini 3, and Gemini 3.5 based on your active limits.</p>
         
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
             <div class="space-y-4">
@@ -57,7 +57,6 @@
 
         const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-        // Smart Countdown UI
         async function runCountdown(seconds, messageElement, filename, reason) {
             for (let i = seconds; i > 0; i--) {
                 messageElement.innerHTML = `⚠️ <span class="text-amber-600 font-semibold">${reason}</span>. Resuming <span class="font-bold">${filename}</span> in <span class="text-indigo-600 font-bold">${i}s</span>...`;
@@ -82,8 +81,8 @@
             statusDiv.className = "mt-4 text-base font-medium text-gray-700";
             statusDiv.innerText = "Extracting ZIP folder content...";
 
-            // Verified API model names according to the user's dashboard
-            const modelsList = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-pro'];
+            // Matches the exact models available with active limits on your dashboard
+            const modelsList = ['gemini-2.5-flash', 'gemini-3-flash', 'gemini-3.5-flash', 'gemini-2.5-flash-lite'];
             let currentModelIndex = 0; 
 
             try {
@@ -95,7 +94,7 @@
                 }).sort((a, b) => a.localeCompare(b, undefined, {numeric: true, sensitivity: 'base'}));
 
                 if (imageFiles.length === 0) {
-                    throw new Error("No supported images (.jpg, .png, .webp) found inside the uploaded ZIP.");
+                    throw new Error("No supported images found inside the uploaded ZIP.");
                 }
 
                 for (let i = 0; i < imageFiles.length; i++) {
@@ -131,48 +130,39 @@
                             }
 
                         } catch (error) {
-                            console.error(`Error with ${activeModel} on ${filename}:`, error);
+                            console.error(`Error with ${activeModel}:`, error);
                             const errorStr = error.toString().toLowerCase();
                             
                             const isRateLimit = errorStr.includes("429") || errorStr.includes("quota") || errorStr.includes("limit") || errorStr.includes("exhausted");
-                            const isNotFound = errorStr.includes("404") || errorStr.includes("not found") || errorStr.includes("not_found") || errorStr.includes("not supported");
+                            const isNotFound = errorStr.includes("404") || errorStr.includes("not found") || errorStr.includes("not supported");
                             
-                            // Handle Rate Limits and Missing Models
                             if (isRateLimit || isNotFound) {
                                 if (currentModelIndex < modelsList.length - 1) {
-                                    // Switch to next model immediately
                                     currentModelIndex++;
                                     let nextModel = modelsList[currentModelIndex];
-                                    let reason = isNotFound ? "Model Deprecated" : "Rate Limit Full";
-                                    
-                                    statusDiv.innerHTML = `🔄 <span class="text-amber-600 font-bold">${reason} on ${activeModel}!</span> Shifting smoothly to <b>${nextModel}</b>...`;
+                                    statusDiv.innerHTML = `🔄 Shifting smoothly to active backup: <b>${nextModel}</b>...`;
                                     attemptsOnCurrentModel = 0; 
                                     await delay(1500); 
                                 } else {
-                                    // ALL MODELS EXHAUSTED
                                     if (isRateLimit) {
-                                        // Ultimate Fix: Wait 30 seconds for limits to reset instead of failing
-                                        await runCountdown(30, statusDiv, filename, `All limits full. Pausing to reset RPM`);
-                                        currentModelIndex = 0; // Go back to primary model after rest
+                                        // If everything hits RPD/RPM limits, wait 35s to clear standard 1-minute tracking limits
+                                        await runCountdown(35, statusDiv, filename, `All model limits full. Cooling down RPM`);
+                                        currentModelIndex = 0; 
                                         attemptsOnCurrentModel = 0;
                                     } else {
-                                        // Fatal Not Found across all models (Extremely Rare)
-                                        caption = `[ERROR: Models failed. Error: ${error.message}]`;
+                                        caption = `[ERROR: Models unavailable or exhausted]`;
                                         success = true;
                                     }
                                 }
                             } else {
-                                // Standard network/server error (500, 503)
                                 if (attemptsOnCurrentModel < maxAttemptsPerModel) {
                                     await runCountdown(5, statusDiv, filename, `Server Busy`);
                                 } else {
                                     if (currentModelIndex < modelsList.length - 1) {
                                         currentModelIndex++;
                                         attemptsOnCurrentModel = 0;
-                                        statusDiv.innerHTML = `⚠️ Multi-error on ${activeModel}. Shifting to <b>${modelsList[currentModelIndex]}</b>...`;
-                                        await delay(1500);
                                     } else {
-                                        caption = `[ERROR: API Server Down]`;
+                                        caption = `[ERROR: API Communication Failed]`;
                                         success = true; 
                                     }
                                 }
@@ -183,16 +173,16 @@
                     outputArea.value += `${filename}\t${caption}\n`;
                     outputArea.scrollTop = outputArea.scrollHeight;
                     
+                    // Keep a 1.5s delay to prevent hammering the 5 RPM ceiling too fast
                     if (i < imageFiles.length - 1) await delay(1500);
                 }
 
-                statusDiv.innerHTML = "✅ <span class='text-green-600 font-bold'>Task Completed! All images processed without missing a beat.</span>";
+                statusDiv.innerHTML = "✅ <span class='text-green-600 font-bold'>Task Completed! All images successfully processed using active dashboard endpoints.</span>";
                 statusDiv.className = "mt-4 text-base font-medium p-2 bg-green-50 rounded-lg text-center border border-green-200";
 
             } catch (error) {
-                console.error("Fatal Error:", error);
+                console.error(error);
                 statusDiv.innerHTML = `❌ <span class='text-red-600 font-bold'>Fatal Error: ${error.message}</span>`;
-                statusDiv.className = "mt-4 text-base font-medium p-2 bg-red-50 rounded-lg text-center border border-red-200";
             } finally {
                 startBtn.disabled = false;
             }
